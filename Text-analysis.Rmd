@@ -1,0 +1,324 @@
+---
+title:  "Textual analysis of the book crime and punishment by Dostoevsky"
+author: "Zarrin MINOOSEPEHR"
+date:   " "
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+Previously, when we wanted to choose a book to read, we used to read its summary first, then review a few random pages of the book to see if the content and feel of the book was what we were looking for or not. But now, as a student of computer science in the humanities, I realized that this can be done by science and even done much more accurately and completely, so I decided to do a textual analysis of Dostoevsky's book "Crime and Punishment" and compare the result with my own previous experience.
+
+## Load the libraries we’ll be using
+```{r load-libraries, warning=FALSE, message=FALSE}
+library(gutenbergr) # For downloading books from Project Gutenberg
+library(tidyverse) # For ggplot, dplyr, etc.
+library(tidytext) # For generating insights from the literature, news and social media
+library(cleanNLP) # For NLP analysis
+```
+## Get data 
+By the means of **gutenbergr** package we can download the book. The book "crime and punishment" is in six parts, each part is divided to different chapters which in total we have 39 chapters. 
+after downloading the book I have changed it to CSV file. Then I have cleaned the data and finally I have done some of the analysis chapter by chapter.
+```{r get-books, echo=TRUE}
+# 2554 crime_and_punishment
+crime_and_punishment_original <- gutenberg_download(2554, meta_fields = "title")
+write_csv(crime_and_punishment_original, "data/crime_and_punishment_original.csv")
+```
+```{r load-text, echo=TRUE}
+read_csv("data/crime_and_punishment_original.csv")
+```
+## Clean up
+```{r show-first-6-rows, echo=TRUE}
+head(crime_and_punishment_original)
+```
+
+#using the cumsum() function to group by chapter for next analysis.
+```{r clean-data}
+crime_and_punishment <- crime_and_punishment_original %>% 
+  # Get rid of rows where text is missing
+  drop_na(text) %>% 
+  # Automatically make chapter numbers
+  mutate(chapter = str_detect(text, "^CHAPTER"),
+         chapter_number = cumsum(chapter)) %>% 
+  # Remove columns we don't need
+  select(-gutenberg_id, -title, -chapter, )
+```
+
+## Tokens and counting words
+```{r tidy-text-format}
+word_frequencies <- crime_and_punishment %>%
+  # The unnest_tokens() functions from tidytext counts words 
+  # or bigram or paragraph to be in its own row
+  unnest_tokens(word, text) %>% 
+  # Remove stop words
+  anti_join(stop_words) %>% 
+  mutate(word = str_extract(word, "[a-z']+")) %>% 
+  # Count all the words
+  count(word, sort = TRUE)
+```
+
+```{r plot-top-15}
+word_frequencies %>% 
+  # Keep top 15
+  top_n(15) %>%
+  # Make the words an ordered factor so they plot in order
+  mutate(word = fct_inorder(word)) %>% 
+  ggplot(aes(x = n, y = word))+
+  geom_col(fill="black")
+```
+
+## Bigrams
+
+```{r tidy-bigrams}
+crime_and_punishment_bigrams <- crime_and_punishment %>% 
+  # n = 2 here means bigrams
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) %>% 
+  # Split the bigrams into two words so we can remove stopwords
+  separate(bigram, c("w1","w2"), sep = " ") %>% 
+  filter(!w1 %in% stop_words$word,
+         !w2 %in% stop_words$word) %>% 
+  # Put the two word columns back together
+  unite(bigram, w1, w2, sep = " ")
+```
+
+```{r counting-bigrams-plot-the-result}
+bigram_frequencies <- crime_and_punishment_bigrams %>% 
+  # Count all the bigrams
+  count(bigram, sort = TRUE)
+ 
+bigram_frequencies %>% 
+  top_n(15) %>%
+  mutate(bigram = fct_inorder(bigram)) %>% 
+  ggplot(aes(x = n, y = bigram))+
+  geom_col(fill="black") +
+  labs(y = "Count", x = NULL, 
+       title = "15 most frequent bigrams")
+```
+
+
+#Using cleanNLP package for this analysis.
+In cleanNLP:
+**cnlp_init_udpipe()**: Use an R-only tagger that should work without installing anything extra
+
+```{r text-wrangling-with-dplyr}
+# For the tagger to work, each row needs to be unique, which means we need to
+# combine all the text into individual chapter-based rows. This takes a little
+# bit of text-wrangling with dplyr:
+crime_and_punishment_tag <- crime_and_punishment %>% 
+  # Group by chapter number
+  group_by(chapter_number) %>% 
+  # Take all the rows in each chapter and collapse them into a single cell
+  nest(data = c(text)) %>% 
+  ungroup() %>% 
+  # Look at each individual cell full of text lines and paste them together into
+  # one really long string of text per chapter
+  mutate(text = map_chr(data, ~paste(.$text, collapse = " "))) %>% 
+  # Get rid of this column
+  select(-data)
+crime_and_punishment_tag
+```
+
+```{r nlp-tag, eval=FALSE}
+# Use the built-in R-based tagger
+cnlp_init_udpipe()
+crime_and_punishment_tagged <- cnlp_annotate(crime_and_punishment_tag, 
+                                     text_name = "text", 
+                                     doc_name = "chapter_number")
+write_csv(crime_and_punishment_tagged$token, "data/crime_and_punishment_tagged.csv")
+```
+
+```{r load-tagged-text, echo=TRUE}
+crime_and_punishment_tagged <- read_csv("data/crime_and_punishment_tagged.csv")
+```
+
+```{r proper-nouns}
+# Find all proper nouns
+proper_nouns <- crime_and_punishment_tagged %>%
+  filter(upos == "PROPN")
+
+main_characters_by_chapter <- proper_nouns %>% 
+  filter(lemma %in% c("Avdotya", "Sonia", "Katerina",
+                      "Pyotr","Pulcheria", "Raskolnikov")) %>% 
+  # Group by chapter and character name
+  group_by(doc_id, lemma) %>% 
+  # Get the count of mentions
+  summarize(n = n()) %>% 
+  # Make a new column named "name" that is an ordered factor of the names
+  mutate(name = factor(lemma, levels = c("Avdotya", "Sonia", "Katerina",
+                      "Pyotr","Pulcheria", "Raskolnikov"), ordered = TRUE)) %>% 
+  # Rename this so it's called chapter
+  rename(chapter = doc_id) %>% 
+  # Group by chapter
+  group_by(chapter) %>% 
+  # Calculate the proportion of each name in each chapter
+  mutate(prop = n / sum(n)) %>% 
+  ungroup() %>% 
+  # Make a cleaner chapter name column
+  mutate(chapter_name = paste("Chapter", chapter)) %>% 
+  mutate(chapter_name = fct_inorder(chapter_name))
+main_characters_by_chapter
+```
+
+```{r props-plot, message = FALSE}
+ggplot(main_characters_by_chapter, aes(x = prop, y = 1, fill = fct_rev(name))) + 
+  geom_col(position = position_stack()) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_viridis_d(option = "plasma", end = 0.9, name = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  labs(x = NULL, y = NULL,
+       title = "Proportion of mentions of each character per chapter") +
+  facet_wrap(vars(chapter_name), nrow = 5) +
+  theme(legend.position = "top",
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        strip.background = element_rect(fill = "white"),
+        legend.text = element_text(face = "bold", size = rel(1)),
+        plot.title = element_text(face = "bold", hjust = 0.5, size = rel(1.7)),
+        plot.subtitle = element_text(hjust = 0.5, size = rel(1.1)))
+```
+
+## Term frequency-inverse document frequency tf-idf
+
+$$
+\begin{aligned}
+tf(\text{term}) &= \frac{n_{\text{term}}}{n_{\text{terms in document}}} \\
+idf(\text{term}) &= \ln{\left(\frac{n_{\text{documents}}}{n_{\text{documents containing term}}}\right)} \\
+tf\text{-}idf(\text{term}) &= tf(\text{term}) \times idf(\text{term})
+\end{aligned}
+$$
+
+Here, to do this analysis, I add some other books of Dostoevsky
+
+```{r Dostoevsky_selected_books}
+Crime_and_punishment <- gutenberg_download(2554, meta_fields = "title")
+Crime_and_punishment_clean <-Crime_and_punishment %>% 
+      drop_na(text)
+
+#The idiot
+The_idiot <- gutenberg_download(2638	, meta_fields = "title")
+The_idiot_clean <- The_idiot %>% 
+    drop_na(text)
+  # The Brothers Karamazov
+The_Brothers_Karamazov <- gutenberg_download(28054, meta_fields = "title")
+The_Brothers_Karamazov_clean <- The_Brothers_Karamazov %>% 
+    drop_na(text)
+# The Gambler	
+The_Gambler <- gutenberg_download(2197, meta_fields = "title")
+The_Gambler_clean <- The_Gambler %>% 
+    drop_na(text)
+
+```
+
+```{r tidy-books}
+# Use bind_rows() from dplyr to bind multiple data by row
+Dostoevsky_selected_books <- bind_rows(The_idiot_clean, The_Brothers_Karamazov_clean, The_Gambler_clean, Crime_and_punishment_clean)
+  
+  book_words <- Dostoevsky_selected_books %>% 
+    unnest_tokens(word, text) %>% 
+    anti_join(stop_words) %>% 
+    mutate(word = str_extract(word, "[a-z']+")) %>% 
+    count(title, word, sort = TRUE)
+```
+
+```{r get-top-10-plot}
+# find the words most distinctive to each document
+book_words_tf_idf <-  book_words %>% 
+  bind_tf_idf(word, title, n)
+# Get the top 15 uniquest words
+book_words_15 <- book_words_tf_idf %>% 
+  arrange(desc(tf_idf)) %>% 
+  group_by(title) %>% 
+  top_n(15) %>% 
+  ungroup() %>% 
+  mutate(word = fct_inorder(word))
+# Plot
+ggplot(book_words_15, 
+       aes(y = fct_rev(word), x = tf_idf, fill = title)) +
+  geom_col() +
+  guides(fill = FALSE) +
+  labs(x = "tf-idf", y = NULL) +
+  facet_wrap(~ title, scales = "free") +
+  theme_bw()
+```
+
+## Sentiment analysis (sa)
+
+To see what the different dictionaries look like using get_sentiments()
+get_sentiments("afinn")  # Scoring system
+get_sentiments("bing")  # Negative/positive
+get_sentiments("nrc")  # Specific emotions
+get_sentiments("loughran")  # Designed for financial statements; positive/negative
+
+ 
+#Split into word tokens
+
+```{r word-tokens}
+crime_and_punishment_new <- crime_and_punishment %>%
+  unnest_tokens(word, text)
+```
+
+#Join the sentiment dictionary
+
+```{r sentiment-joining}
+crime_and_punishment_sa <- crime_and_punishment_new %>%
+  inner_join(get_sentiments("bing"))
+```
+
+Get a count of positive and negative words in each chapter. Convert the sentiment column into two columns named "positive" and "negative"
+
+```{r plot-result}
+sentiment_analysis_chapter <- crime_and_punishment_sa %>% 
+  # Get a count of positive and negative words in each chapter 
+  count(chapter_number, sentiment) %>% 
+  # Convert the sentiment column into two columns named "positive" and "negative"
+  pivot_wider(names_from = sentiment, values_from = n) %>% 
+  # Calculate net sentiment
+  mutate(net_sentiment = positive - negative)
+  # Plot it
+  sentiment_analysis_chapter %>% 
+    ggplot(aes(x = chapter_number, y = net_sentiment)) +
+    geom_line()
+```
+
+Another way, by splitting the data into groups of lines, to show a more granular view of the progression of the plot
+
+```{r range-analysis}
+sentiment_analysis_range <- crime_and_punishment_sa %>% 
+  mutate(line_number = row_number()) %>% 
+  # Divide lines into groups of 100
+  mutate(index = line_number %/% 100) %>% 
+  # Get a count of postiive and negative words in each 100-line chunk
+  count(index, sentiment) %>% 
+  # Convert the sentiment column into two columns named "positive" and "negative"
+  pivot_wider(names_from = sentiment, values_from = n) %>% 
+  # Calculate net sentiment
+  mutate(net_sentiment = positive - negative)
+  # Plot it
+  sentiment_analysis_range %>% 
+    ggplot(aes(x = index, y = net_sentiment)) +
+    geom_col(aes(fill = net_sentiment > 0))
+```
+
+well, we see that the crime and punishment is a sad novel.
+
+# Conclusion:
+As a conclusion, I can say that the result is really close to my conclusion when I read it as a human being. A very sad story that deeply affected me. What I wish I could add to this analysis is the analysis of the books theme. I remember that in this book there were interesting questions and explanation about Justice, morality, love, rights, punishment, politics and poverty, etc. I wish I could find out which is bolder? Or in which category we can put this book? Is it just a literary novel? Or examining a moral and social theory? Or the psychological analysis of crime?
+I hope in the future I can learn the way to do more precise text analysis.
+
+
+### References
+
+[Text Mining with R: Julia Silge and David Robinson](https://www.tidytextmining.com/)
+
+[Dr. Andrew Heiss](https://datavizm20.classes.andrewheiss.com/example/13-example/)
+
+[Project Gutenberg](https://www.gutenberg.org/ebooks/author/111)
+
+
+
+
+
